@@ -24,32 +24,34 @@ function getRotation(word) {
 export default function WordCloudScreen() {
   const [poll, setPoll]   = useState(null);
   const [words, setWords] = useState({});
+  const [mcVotes, setMcVotes] = useState({});
   const [growing, setGrowing] = useState(new Set());
   const prevWords = useRef({});
 
   useEffect(() => {
     loadInitial();
 
-    // Subscribe to new text votes in real-time
     const channel = supabase
-      .channel('wordcloud-votes')
+      .channel('results-votes')
       .on(
         'postgres_changes',
         { event: 'INSERT', schema: 'public', table: 'votes' },
         (payload) => {
-          const response = payload.new.text_response;
-          if (!response) return;
-          const cleaned = response.trim().toLowerCase();
-          if (!cleaned) return;
-          setWords(prev => {
-            const next = { ...prev, [cleaned]: (prev[cleaned] || 0) + 1 };
-            if (prev[cleaned]) {
-              // Word grew — trigger grow animation
+          if (payload.new.text_response) {
+            // Word Cloud Vote
+            const cleaned = payload.new.text_response.trim().toLowerCase();
+            if (!cleaned) return;
+            setWords(prev => {
+              const next = { ...prev, [cleaned]: (prev[cleaned] || 0) + 1 };
               setGrowing(g => { const s = new Set(g); s.add(cleaned); return s; });
               setTimeout(() => setGrowing(g => { const s = new Set(g); s.delete(cleaned); return s; }), 500);
-            }
-            return next;
-          });
+              return next;
+            });
+          } else {
+            // Multiple Choice Vote
+            const index = payload.new.option_index;
+            setMcVotes(prev => ({ ...prev, [index]: (prev[index] || 0) + 1 }));
+          }
         }
       )
       .on(
@@ -65,27 +67,40 @@ export default function WordCloudScreen() {
   const loadInitial = async () => {
     const { data } = await getActivePoll();
     setPoll(data);
-    if (data?.type === 'text') {
+    if (!data) return;
+
+    if (data.type === 'text') {
       const { words: w } = await getTextVotesForPoll(data.id);
       setWords(w);
-      prevWords.current = w;
+      setMcVotes({});
     } else {
+      const { data: vData } = await supabase
+        .from('votes')
+        .select('option_index')
+        .eq('poll_id', data.id);
+      
+      const counts = {};
+      vData?.forEach(v => {
+        counts[v.option_index] = (counts[v.option_index] || 0) + 1;
+      });
+      setMcVotes(counts);
       setWords({});
     }
   };
 
-  // Calculate font size: min 1.5rem, max 10rem, scaled by frequency
   const getSize = (count) => {
     const maxCount = Math.max(...Object.values(words), 1);
     const scale = count / maxCount;
-    return 1.5 + scale * 8.5; // rem
+    return 1.5 + scale * 8.5;
   };
 
   const wordEntries = Object.entries(words).sort((a, b) => b[1] - a[1]);
+  const totalVotes = poll?.type === 'text' 
+    ? Object.values(words).reduce((a, b) => a + b, 0)
+    : Object.values(mcVotes).reduce((a, b) => a + b, 0);
 
   return (
     <div className="word-cloud-screen">
-      {/* Header */}
       <div style={{ position: 'absolute', top: '2rem', left: 0, right: 0, textAlign: 'center', padding: '0 2rem' }}>
         <p style={{ fontSize: '0.8rem', textTransform: 'uppercase', letterSpacing: '0.15em', color: 'rgba(255,255,255,0.3)', marginBottom: '0.5rem' }}>
           Realtidsresultat
@@ -97,45 +112,60 @@ export default function WordCloudScreen() {
         )}
       </div>
 
-      {/* Word Cloud */}
-      <div className="word-cloud-container" style={{ marginTop: poll ? '4rem' : '0' }}>
-        {wordEntries.length === 0 ? (
-          <p className="word-cloud-empty">
-            {poll?.type === 'text'
-              ? 'Väntar på svar...'
-              : poll
-              ? 'Aktiv enkät är inte av ordmolnstyp'
-              : 'Ingen aktiv enkät just nu'}
-          </p>
+      <div className="word-cloud-container" style={{ marginTop: '4rem' }}>
+        {poll?.type === 'text' ? (
+          wordEntries.length === 0 ? (
+            <p className="word-cloud-empty">Väntar på svar...</p>
+          ) : (
+            wordEntries.map(([word, count]) => {
+              const rot = getRotation(word);
+              return (
+                <span
+                  key={word}
+                  className={`word-cloud-word${growing.has(word) ? ' growing' : ''}`}
+                  style={{
+                    fontSize: `${getSize(count)}rem`,
+                    color: getColor(word),
+                    '--rot': `${rot}deg`,
+                    transform: `rotate(${rot}deg)`,
+                  }}
+                >
+                  {word}
+                </span>
+              );
+            })
+          )
+        ) : poll?.type === 'multiple_choice' ? (
+          <div className="results-chart-container animate-fade">
+            {poll.options.map((opt, i) => {
+              const count = mcVotes[i] || 0;
+              const maxVal = Math.max(...Object.values(mcVotes), 1);
+              const percent = (count / maxVal) * 100;
+              return (
+                <div key={i} className="chart-bar-wrapper">
+                  <div className="chart-bar-value">{count}</div>
+                  <div className="chart-bar-outer">
+                    <div 
+                      className="chart-bar-inner" 
+                      style={{ '--percent': `${percent}%` } }
+                    />
+                  </div>
+                  <div className="chart-bar-label">{opt}</div>
+                </div>
+              );
+            })}
+          </div>
         ) : (
-          wordEntries.map(([word, count]) => {
-            const rot = getRotation(word);
-            return (
-              <span
-                key={word}
-                className={`word-cloud-word${growing.has(word) ? ' growing' : ''}`}
-                style={{
-                  fontSize: `${getSize(count)}rem`,
-                  color: getColor(word),
-                  '--rot': `${rot}deg`,
-                  transform: `rotate(${rot}deg)`,
-                }}
-                title={`${count} svar`}
-              >
-                {word}
-              </span>
-            );
-          })
+          <p className="word-cloud-empty">Ingen aktiv enkät just nu</p>
         )}
       </div>
 
-      {/* Footer */}
-      {wordEntries.length > 0 && (
+      {totalVotes > 0 && (
         <div style={{
           position: 'absolute', bottom: '2rem', left: 0, right: 0,
           textAlign: 'center', color: 'rgba(255,255,255,0.2)', fontSize: '0.8rem'
         }}>
-          {Object.values(words).reduce((a, b) => a + b, 0)} svar totalt
+          {totalVotes} svar totalt
         </div>
       )}
     </div>

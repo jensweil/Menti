@@ -8,9 +8,10 @@
     "build": "vite build",
     "preview": "vite preview",
     "deploy:hostinger": "npm run build && node --env-file=.env deploy.js",
-    "deploy:github": "npm run build && gh-pages -d dist"
+    "deploy:github": "cross-env VITE_BASE=/Menti/ npm run build && gh-pages -d dist"
   },
   "devDependencies": {
+    "cross-env": "^10.1.0",
     "ftp-deploy": "^2.4.7",
     "gh-pages": "^6.3.0",
     "typescript": "~6.0.2",
